@@ -1,0 +1,94 @@
+name: Build IPA
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Prepare source
+        run: |
+          mkdir -p BuildApp
+          if [ -f source.zip ]; then
+            echo "Unzipping source..."
+            unzip -o source.zip -d BuildApp/
+          elif [ -d src ]; then
+            echo "Copying src/..."
+            cp -r src/* BuildApp/ 2>/dev/null || true
+          fi
+          echo "Swift files:"
+          find BuildApp -name "*.swift"
+      
+      - name: Compile with swiftc
+        run: |
+          SWIFT_FILES=$(find BuildApp -name "*.swift" | sort)
+          if [ -z "$SWIFT_FILES" ]; then
+            echo "ERROR: No Swift files found!"
+            exit 1
+          fi
+          echo "Files to compile:"
+          echo "$SWIFT_FILES"
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK: $SDK_PATH"
+          swiftc --version
+          echo "--- Compiling (errors will show below) ---"
+          # shellcheck disable=SC2086
+          swiftc -parse-as-library -target arm64-apple-ios17.0 -sdk "$SDK_PATH" -o BuildAppBinary $SWIFT_FILES -framework Foundation -framework UIKit -framework SwiftUI
+          echo "Exit code: $?"
+          ls -lh BuildAppBinary
+          file BuildAppBinary
+      
+      - name: Package IPA
+        run: |
+          APP_NAME="BuildApp"
+          BUNDLE_ID="com.buildbox.app"
+          
+          # Create app bundle
+          mkdir -p "$APP_NAME.app"
+          cp BuildAppBinary "$APP_NAME.app/$APP_NAME"
+          
+          # Create Info.plist
+          cat > "$APP_NAME.app/Info.plist" << 'PLISTEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.buildbox.app</string>
+            <key>CFBundleName</key>
+            <string>BuildApp</string>
+            <key>CFBundleExecutable</key>
+            <string>BuildApp</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>UILaunchScreen</key>
+            <dict/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+            </array>
+          </dict>
+          </plist>
+          PLISTEOF
+          
+          # Package as IPA
+          mkdir -p Payload
+          cp -r "$APP_NAME.app" Payload/
+          zip -r BuildApp-unsigned.ipa Payload/
+          echo "IPA created:"
+          ls -lh *.ipa
+      
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-ipa
+          path: BuildApp-unsigned.ipa
